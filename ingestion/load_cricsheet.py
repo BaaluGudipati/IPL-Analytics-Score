@@ -1,0 +1,109 @@
+"""Download Cricsheet IPL data and load it into DuckDB. No CSVs involved.
+
+Small scale: only the last N seasons are loaded (default 3).
+Usage:  python ingestion/load_cricsheet.py [--seasons 3] [--json-dir PATH]
+Data: Cricsheet (cricsheet.org). Check their licence/attribution before publishing.
+"""
+import argparse, io, json, urllib.request, zipfile
+from pathlib import Path
+import duckdb
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent.parent
+DB = ROOT / "data" / "ipl.duckdb"
+URL = "https://cricsheet.org/downloads/ipl_json.zip"
+NOT_BOWLER_WICKET = {"run out", "retired hurt", "retired out", "obstructing the field"}
+VENUE_ALIASES = {
+    "Maharaja Yadavindra Singh International Cricket Stadium, New Chandigarh":
+        "Maharaja Yadavindra Singh International Cricket Stadium, Mullanpur",
+}
+clean_venue = lambda v: VENUE_ALIASES.get(v, v)
+
+
+def season_year(s):
+    """'2020/21' -> 2020, '2023' -> 2023"""
+    return int(str(s).split("/")[0])
+
+
+def read_matches(json_dir, zip_bytes):
+    if json_dir:
+        for p in sorted(Path(json_dir).glob("*.json")):
+            yield p.stem, json.loads(p.read_text(encoding="utf-8"))
+    else:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+            for n in z.namelist():
+                if n.endswith(".json"):
+                    yield Path(n).stem, json.loads(z.read(n))
+
+
+def parse(match_id, m):
+    info = m["info"]
+    people = info.get("registry", {}).get("people", {})
+    pid = lambda name: people.get(name, name)  # id survives name changes
+    teams = info["teams"]
+    match = dict(
+        match_id=match_id, season=season_year(info["season"]),
+        date=info["dates"][0], venue=clean_venue(info.get("venue")), city=info.get("city"),
+        team1=teams[0], team2=teams[1],
+        toss_winner=info.get("toss", {}).get("winner"),
+        toss_decision=info.get("toss", {}).get("decision"),
+        winner=info.get("outcome", {}).get("winner"),
+    )
+    balls = []
+    for inn_no, inn in enumerate(m.get("innings", []), start=1):
+        if inn.get("super_over"):
+            continue
+        for ov in inn["overs"]:
+            over = ov["over"]
+            phase = "powerplay" if over < 6 else "middle" if over < 15 else "death"
+            for i, d in enumerate(ov["deliveries"], start=1):
+                ex = d.get("extras", {})
+                w = d.get("wickets", [])
+                balls.append(dict(
+                    match_id=match_id, innings=inn_no, batting_team=inn["team"],
+                    over=over, ball_in_over=i, phase=phase,
+                    batter_id=pid(d["batter"]), batter=d["batter"],
+                    bowler_id=pid(d["bowler"]), bowler=d["bowler"],
+                    runs_batter=d["runs"]["batter"], runs_total=d["runs"]["total"],
+                    is_wide=int("wides" in ex), is_noball=int("noballs" in ex),
+                    is_legal=int("wides" not in ex and "noballs" not in ex),
+                    is_wicket=int(len(w) > 0),
+                    is_bowler_wicket=int(any(x["kind"] not in NOT_BOWLER_WICKET for x in w)),
+                ))
+    return match, balls
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--seasons", type=int, default=3)
+    ap.add_argument("--json-dir", help="use local Cricsheet JSON files instead of downloading")
+    a = ap.parse_args()
+
+    zip_bytes = None
+    if not a.json_dir:
+        print("Downloading", URL)
+        zip_bytes = urllib.request.urlopen(URL, timeout=120).read()
+
+    parsed = [parse(mid, m) for mid, m in read_matches(a.json_dir, zip_bytes)]
+    latest = max(p[0]["season"] for p in parsed)
+    keep = [p for p in parsed if p[0]["season"] > latest - a.seasons]
+    matches = pd.DataFrame([p[0] for p in keep])
+    deliveries = pd.DataFrame([b for p in keep for b in p[1]])
+
+    DB.parent.mkdir(exist_ok=True)
+    con = duckdb.connect(str(DB))
+    con.register("m_df", matches)
+    con.register("d_df", deliveries)
+    con.execute("CREATE OR REPLACE TABLE raw_matches AS SELECT * FROM m_df")
+    con.execute("CREATE OR REPLACE TABLE raw_deliveries AS SELECT * FROM d_df")
+    con.execute((ROOT / "sql" / "models.sql").read_text(encoding="utf-8"))
+
+    # reconciliation check from the plan: match count vs source
+    n_src, n_db = len(keep), con.execute("SELECT count(*) FROM raw_matches").fetchone()[0]
+    assert n_src == n_db, f"match count mismatch {n_src} vs {n_db}"
+    print(f"Loaded {n_db} matches, {len(deliveries):,} deliveries "
+          f"(seasons {latest - a.seasons + 1}-{latest}) -> {DB}")
+
+
+if __name__ == "__main__":
+    main()
