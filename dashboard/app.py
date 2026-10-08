@@ -11,8 +11,11 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:  # Streamlit Cloud: URL lives in secrets
     os.environ.setdefault("SUPABASE_DB_URL", st.secrets["SUPABASE_DB_URL"])
-except Exception:
-    pass
+except Exception as e:
+    if "SUPABASE_DB_URL" not in os.environ:
+        st.error(f"SUPABASE_DB_URL secret not found ({type(e).__name__}). "
+                 "Add it under Manage app > Settings > Secrets as: SUPABASE_DB_URL = \"postgresql://...\"")
+        st.stop()
 from db import query_df
 
 st.set_page_config(page_title="IPL Analytics Engine", layout="wide")
