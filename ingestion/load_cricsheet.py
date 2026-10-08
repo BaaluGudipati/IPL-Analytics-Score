@@ -34,6 +34,11 @@ CREATE TABLE raw_deliveries (
     is_wide smallint, is_noball smallint, is_legal smallint,
     is_wicket smallint, is_bowler_wicket smallint,
     PRIMARY KEY (match_id, innings, "over", ball_in_over));
+-- Supabase enables RLS on new tables; give the read-only dashboard role a select policy
+ALTER TABLE raw_matches ENABLE ROW LEVEL SECURITY;
+ALTER TABLE raw_deliveries ENABLE ROW LEVEL SECURITY;
+CREATE POLICY reader_select ON raw_matches FOR SELECT TO ipl_reader USING (true);
+CREATE POLICY reader_select ON raw_deliveries FOR SELECT TO ipl_reader USING (true);
 """
 
 def season_year(date):
