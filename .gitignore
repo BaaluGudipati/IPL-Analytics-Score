@@ -1,5 +1,5 @@
-data/ipl.duckdb
-data/raw/
 .venv/
-pycache/
+__pycache__/
 analysis/output/
+.env
+.streamlit/secrets.toml

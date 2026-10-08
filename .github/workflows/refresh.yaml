@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,9 +17,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      - name: Load Cricsheet data into DuckDB
+      - name: Load Cricsheet data and apply SQL models
         run: python ingestion/load_cricsheet.py
-      - name: Apply SQL models
-        run: python -c "import duckdb; c=duckdb.connect('data/ipl.duckdb'); c.execute(open('sql/models.sql', encoding='utf-8').read())"
       - name: Data quality checks
         run: python checks/run_checks.py

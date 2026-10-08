@@ -1,9 +1,13 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from db import query_df
+
 import os
-import duckdb
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-con = duckdb.connect("data/ipl.duckdb", read_only=True)
-df = con.sql("""
+df = query_df("""
     with t as (
         select d.batter_id, d.batter, d.bowler_id, d.bowler,
                d.innings, d."over" as ov, d.is_legal, d.runs_total, d.runs_batter,
@@ -11,11 +15,11 @@ df = con.sql("""
                coalesce(sum(d.is_legal) over w, 0)::INT as balls_before
         from raw_deliveries d
         window w as (partition by d.match_id, d.innings
-                     order by d."over", d.ball_in_over, d.rowid
+                     order by d."over", d.ball_in_over
                      rows between unbounded preceding and 1 preceding)
     )
     select * from t where is_legal = 1
-""").df()
+""")
 
 feats = ["innings", "ov", "wickets_down", "balls_before"]
 X = df[feats]
